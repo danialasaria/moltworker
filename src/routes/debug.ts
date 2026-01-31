@@ -9,6 +9,75 @@ import { findExistingMoltbotProcess } from '../gateway';
  */
 const debug = new Hono<AppEnv>();
 
+// GET /debug/status - Summary of gateway status + recent logs
+debug.get('/status', async (c) => {
+  const sandbox = c.get('sandbox');
+
+  try {
+    // Find running gateway process
+    const processes = await sandbox.listProcesses();
+    const running = processes.find(p => p.command?.includes('start-moltbot.sh') && p.status === 'running');
+    const lastDeviceCmd = processes.find(p =>
+      p.command?.startsWith('clawdbot devices') && p.startTime
+    );
+
+    const status: Record<string, unknown> = {
+      has_running_gateway: !!running,
+      gateway_process: running ? {
+        id: running.id,
+        command: running.command,
+        status: running.status,
+        startTime: running.startTime?.toISOString(),
+      } : null,
+    };
+
+    if (lastDeviceCmd) {
+      status.last_device_command = {
+        id: lastDeviceCmd.id,
+        command: lastDeviceCmd.command,
+        status: lastDeviceCmd.status,
+        startTime: lastDeviceCmd.startTime?.toISOString(),
+      };
+    }
+
+    // Tail latest log file
+    const listProc = await sandbox.startProcess(
+      'sh -c "ls -t /tmp/clawdbot/clawdbot-*.log 2>/dev/null | head -n 1"'
+    );
+    let attempts = 0;
+    while (attempts < 20) {
+      await new Promise(r => setTimeout(r, 250));
+      if (listProc.status !== 'running') break;
+      attempts++;
+    }
+    const listLogs = await listProc.getLogs();
+    const latestLog = (listLogs.stdout || '').trim();
+
+    if (latestLog) {
+      const tailProc = await sandbox.startProcess(`tail -n 50 ${latestLog}`);
+      attempts = 0;
+      while (attempts < 20) {
+        await new Promise(r => setTimeout(r, 250));
+        if (tailProc.status !== 'running') break;
+        attempts++;
+      }
+      const tailLogs = await tailProc.getLogs();
+      status.gateway_log = {
+        file: latestLog,
+        stdout: tailLogs.stdout || '',
+        stderr: tailLogs.stderr || '',
+      };
+    } else {
+      status.gateway_log = { file: null, stdout: '', stderr: listLogs.stderr || 'no log file' };
+    }
+
+    return c.json(status);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: message }, 500);
+  }
+});
+
 // GET /debug/version - Returns version info from inside the container
 debug.get('/version', async (c) => {
   const sandbox = c.get('sandbox');
@@ -340,6 +409,7 @@ debug.get('/ws-test', async (c) => {
 debug.get('/env', async (c) => {
   return c.json({
     has_anthropic_key: !!c.env.ANTHROPIC_API_KEY,
+    has_gemini_key: !!c.env.GEMINI_API_KEY,
     has_openai_key: !!c.env.OPENAI_API_KEY,
     has_gateway_token: !!c.env.MOLTBOT_GATEWAY_TOKEN,
     has_r2_access_key: !!c.env.R2_ACCESS_KEY_ID,
@@ -351,6 +421,116 @@ debug.get('/env', async (c) => {
     cf_access_team_domain: c.env.CF_ACCESS_TEAM_DOMAIN,
     has_cf_access_aud: !!c.env.CF_ACCESS_AUD,
   });
+});
+
+// GET /debug/container-env - Check what env vars are set INSIDE the container (sanitized)
+debug.get('/container-env', async (c) => {
+  const sandbox = c.get('sandbox');
+
+  try {
+    // Check for presence of key env vars inside container (don't expose values)
+    const checkVars = [
+      'GEMINI_API_KEY',
+      'ANTHROPIC_API_KEY',
+      'OPENAI_API_KEY',
+      'CLAWDBOT_GATEWAY_TOKEN',
+      'TELEGRAM_BOT_TOKEN',
+      'GITHUB_TOKEN',
+    ];
+
+    const cmd = checkVars
+      .map(v => `echo "${v}=$(test -n \\"\\$${v}\\" && echo 'SET' || echo 'UNSET')"`)
+      .join(' && ');
+
+    const proc = await sandbox.startProcess(`sh -c '${cmd}'`);
+
+    let attempts = 0;
+    while (attempts < 20) {
+      await new Promise(r => setTimeout(r, 250));
+      if (proc.status !== 'running') break;
+      attempts++;
+    }
+
+    const logs = await proc.getLogs();
+    const stdout = logs.stdout || '';
+
+    // Parse the output into an object
+    const result: Record<string, string> = {};
+    for (const line of stdout.split('\n')) {
+      const match = line.match(/^(\w+)=(SET|UNSET)$/);
+      if (match) {
+        result[match[1]] = match[2];
+      }
+    }
+
+    return c.json({
+      status: proc.status,
+      exitCode: proc.exitCode,
+      container_env: result,
+      raw: stdout,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: errorMessage }, 500);
+  }
+});
+
+// GET /debug/gateway-log - Tail the latest gateway log file
+debug.get('/gateway-log', async (c) => {
+  const sandbox = c.get('sandbox');
+  const linesParam = c.req.query('lines');
+  const parsedLines = Number.parseInt(linesParam ?? '', 10);
+  const lines = Number.isFinite(parsedLines) && parsedLines > 0
+    ? Math.min(parsedLines, 1000)
+    : 200;
+
+  try {
+    const listProc = await sandbox.startProcess(
+      'sh -c "ls -t /tmp/clawdbot/clawdbot-*.log 2>/dev/null | head -n 1"'
+    );
+
+    let attempts = 0;
+    while (attempts < 20) {
+      await new Promise(r => setTimeout(r, 250));
+      if (listProc.status !== 'running') break;
+      attempts++;
+    }
+
+    const listLogs = await listProc.getLogs();
+    const latestLog = (listLogs.stdout || '').trim();
+
+    if (!latestLog) {
+      return c.json({
+        status: listProc.status,
+        exitCode: listProc.exitCode,
+        lines,
+        stdout: '',
+        stderr: listLogs.stderr || '',
+        message: 'No gateway log file found',
+      });
+    }
+
+    const tailProc = await sandbox.startProcess(`tail -n ${lines} ${latestLog}`);
+    attempts = 0;
+    while (attempts < 20) {
+      await new Promise(r => setTimeout(r, 250));
+      if (tailProc.status !== 'running') break;
+      attempts++;
+    }
+
+    const tailLogs = await tailProc.getLogs();
+    return c.json({
+      status: tailProc.status,
+      exitCode: tailProc.exitCode,
+      lines,
+      logFile: latestLog,
+      stdout: tailLogs.stdout || '',
+      stderr: tailLogs.stderr || '',
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: errorMessage }, 500);
+  }
 });
 
 // GET /debug/container-config - Read the moltbot config from inside the container

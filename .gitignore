@@ -9,6 +9,8 @@ build-info.json
 .wrangler/
 .dev.vars
 
+# Cloudflare API configuration
+
 # Logs
 *.log
 npm-debug.log*

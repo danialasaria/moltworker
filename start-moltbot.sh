@@ -1,5 +1,6 @@
 #!/bin/bash
 # Startup script for Moltbot in Cloudflare Sandbox
+# Version: 2026-01-31-v37-gemini-3-flash
 # This script:
 # 1. Restores config from R2 backup if available
 # 2. Configures moltbot from environment variables
@@ -163,6 +164,22 @@ if (config.models?.providers?.anthropic?.models) {
     }
 }
 
+// Clean up any custom google provider config from previous runs
+// (the built-in google provider should be used instead)
+if (config.models?.providers?.google) {
+    console.log('Removing custom google provider config (use built-in provider instead)');
+    delete config.models.providers.google;
+}
+
+// Clean up old google model allowlist entries
+if (config.agents?.defaults?.models) {
+    const googleModels = Object.keys(config.agents.defaults.models).filter(k => k.startsWith('google/'));
+    if (googleModels.length > 0) {
+        console.log('Removing old google model allowlist entries');
+        googleModels.forEach(m => delete config.agents.defaults.models[m]);
+    }
+}
+
 
 
 // Gateway configuration
@@ -187,7 +204,6 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
     config.channels.telegram = config.channels.telegram || {};
     config.channels.telegram.botToken = process.env.TELEGRAM_BOT_TOKEN;
     config.channels.telegram.enabled = true;
-    config.channels.telegram.dm = config.channels.telegram.dm || {};
     config.channels.telegram.dmPolicy = process.env.TELEGRAM_DM_POLICY || 'pairing';
 }
 
@@ -196,8 +212,7 @@ if (process.env.DISCORD_BOT_TOKEN) {
     config.channels.discord = config.channels.discord || {};
     config.channels.discord.token = process.env.DISCORD_BOT_TOKEN;
     config.channels.discord.enabled = true;
-    config.channels.discord.dm = config.channels.discord.dm || {};
-    config.channels.discord.dm.policy = process.env.DISCORD_DM_POLICY || 'pairing';
+    config.channels.discord.dmPolicy = process.env.DISCORD_DM_POLICY || 'pairing';
 }
 
 // Slack configuration
@@ -212,10 +227,20 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
 // Usage: Set AI_GATEWAY_BASE_URL or ANTHROPIC_BASE_URL to your endpoint like:
 //   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/anthropic
 //   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/openai
+//   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/google-ai-studio
 const baseUrl = (process.env.AI_GATEWAY_BASE_URL || process.env.ANTHROPIC_BASE_URL || '').replace(/\/+$/, '');
 const isOpenAI = baseUrl.endsWith('/openai');
+const isGeminiGateway = baseUrl.endsWith('/google-ai-studio');
+// Use Gemini if gateway points to google-ai-studio OR if GEMINI_API_KEY is set directly
+const isGemini = isGeminiGateway || !!process.env.GEMINI_API_KEY;
 
-if (isOpenAI) {
+if (isGemini) {
+
+    // Google Gemini - use the built-in google provider (no custom config needed)
+    // Just set GEMINI_API_KEY env var and the model
+    console.log('Using built-in Google Gemini provider');
+    config.agents.defaults.model.primary = 'google/gemini-3-flash-preview';
+} else if (isOpenAI) {
     // Create custom openai provider config with baseUrl override
     // Omit apiKey so moltbot falls back to OPENAI_API_KEY env var
     console.log('Configuring OpenAI provider with base URL:', baseUrl);
@@ -270,6 +295,20 @@ fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration updated successfully');
 console.log('Config:', JSON.stringify(config, null, 2));
 EOFNODE
+
+# ============================================================
+# CONFIGURE GIT CREDENTIALS
+# ============================================================
+if [ -n "$GITHUB_TOKEN" ]; then
+    echo "Configuring git credentials for GitHub..."
+    git config --global credential.helper store
+    git config --global user.email "moltbot@localhost"
+    git config --global user.name "Moltbot"
+    # Store credentials for GitHub
+    echo "https://x-access-token:${GITHUB_TOKEN}@github.com" > ~/.git-credentials
+    chmod 600 ~/.git-credentials
+    echo "GitHub credentials configured"
+fi
 
 # ============================================================
 # START GATEWAY
