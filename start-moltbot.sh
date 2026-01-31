@@ -180,6 +180,22 @@ if (config.agents?.defaults?.models) {
     }
 }
 
+// Clean up any Groq provider config from previous runs
+// (recreated fresh below with correct settings)
+if (config.models?.providers?.groq) {
+    console.log('Removing old groq provider config (will be recreated fresh)');
+    delete config.models.providers.groq;
+}
+
+// Clean up old groq model allowlist entries
+if (config.agents?.defaults?.models) {
+    const groqModels = Object.keys(config.agents.defaults.models).filter(k => k.startsWith('groq/'));
+    if (groqModels.length > 0) {
+        console.log('Removing old groq model allowlist entries');
+        groqModels.forEach(m => delete config.agents.defaults.models[m]);
+    }
+}
+
 
 
 // Gateway configuration
@@ -246,9 +262,9 @@ if (isGroq) {
     config.models.providers = config.models.providers || {};
     config.models.providers.groq = {
         baseUrl: groqBaseUrl,
-        api: 'openai-chat',
+        api: 'openai-responses',
         models: [
-            { id: 'llama-3-groq-8b-tool-use', name: 'Llama 3 Groq 8B Tool Use', contextWindow: 8192 },
+            { id: 'moonshotai/kimi-k2-instruct-0905', name: 'Kimi K2', contextWindow: 128000 },
             { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B', contextWindow: 128000 },
             { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B Instant', contextWindow: 128000 },
         ]
@@ -257,10 +273,10 @@ if (isGroq) {
         config.models.providers.groq.apiKey = process.env.GROQ_API_KEY;
     }
     config.agents.defaults.models = config.agents.defaults.models || {};
-    config.agents.defaults.models['groq/llama-3-groq-8b-tool-use'] = { alias: 'Groq 8B Tool Use' };
+    config.agents.defaults.models['groq/moonshotai/kimi-k2-instruct-0905'] = { alias: 'Kimi K2' };
     config.agents.defaults.models['groq/llama-3.3-70b-versatile'] = { alias: 'Llama 3.3 70B' };
     config.agents.defaults.models['groq/llama-3.1-8b-instant'] = { alias: 'Llama 3.1 8B' };
-    config.agents.defaults.model.primary = 'groq/llama-3-groq-8b-tool-use';
+    config.agents.defaults.model.primary = 'groq/moonshotai/kimi-k2-instruct-0905';
 } else if (isGemini) {
 
     // Google Gemini - use the built-in google provider (no custom config needed)
