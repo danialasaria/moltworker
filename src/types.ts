@@ -15,6 +15,7 @@ export interface MoltbotEnv {
   ANTHROPIC_BASE_URL?: string;
   OPENAI_API_KEY?: string;
   GEMINI_API_KEY?: string; // Google Gemini API key (built-in provider)
+  GROQ_API_KEY?: string; // Groq API key for fast inference (from console.groq.com)
   MOLTBOT_GATEWAY_TOKEN?: string; // Gateway token (mapped to CLAWDBOT_GATEWAY_TOKEN for container)
   GITHUB_TOKEN?: string; // GitHub PAT for pushing repos
 

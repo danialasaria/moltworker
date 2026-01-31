@@ -13,6 +13,7 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   const normalizedBaseUrl = env.AI_GATEWAY_BASE_URL?.replace(/\/+$/, '');
   const isOpenAIGateway = normalizedBaseUrl?.endsWith('/openai');
   const isGeminiGateway = normalizedBaseUrl?.endsWith('/google-ai-studio');
+  const isGroqGateway = normalizedBaseUrl?.endsWith('/groq');
 
   // AI Gateway vars take precedence
   // Map to the appropriate provider env var based on the gateway endpoint
@@ -22,6 +23,8 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
     } else if (isGeminiGateway) {
       // OpenClaw uses GEMINI_API_KEY for the built-in google provider
       envVars.GEMINI_API_KEY = env.AI_GATEWAY_API_KEY;
+    } else if (isGroqGateway) {
+      envVars.GROQ_API_KEY = env.AI_GATEWAY_API_KEY;
     } else {
       envVars.ANTHROPIC_API_KEY = env.AI_GATEWAY_API_KEY;
     }
@@ -36,6 +39,9 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   }
   if (env.GEMINI_API_KEY) {
     envVars.GEMINI_API_KEY = env.GEMINI_API_KEY;
+  }
+  if (env.GROQ_API_KEY) {
+    envVars.GROQ_API_KEY = env.GROQ_API_KEY;
   }
 
   // Pass base URL (used by start-moltbot.sh to determine provider)

@@ -88,6 +88,7 @@
 	// Note: CF_ACCOUNT_ID should be set via `wrangler secret put CF_ACCOUNT_ID`
 	// Secrets to configure via `wrangler secret put`:
 	// - ANTHROPIC_API_KEY: Your Anthropic API key
+	// - GROQ_API_KEY: (optional) Groq API key for fast inference (from console.groq.com)
 	// - CF_ACCESS_TEAM_DOMAIN: Cloudflare Access team domain
 	// - CF_ACCESS_AUD: Cloudflare Access application audience
 	// - TELEGRAM_BOT_TOKEN: (optional) Telegram bot token

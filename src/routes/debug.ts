@@ -9,6 +9,42 @@ import { findExistingMoltbotProcess } from '../gateway';
  */
 const debug = new Hono<AppEnv>();
 
+function isGatewayProcess(command: string): boolean {
+  return command.includes('start-moltbot.sh') || command.includes('clawdbot gateway');
+}
+
+function isCliProcess(command: string): boolean {
+  return command.startsWith('clawdbot ') && !command.includes('clawdbot gateway');
+}
+
+function isDebugProcess(command: string): boolean {
+  return (
+    command.startsWith('clawdbot ') ||
+    command.startsWith('sh -c ') ||
+    command.startsWith('bash -lc ') ||
+    command.startsWith('tail ') ||
+    command.startsWith('cat ') ||
+    command.startsWith('mount ') ||
+    command.startsWith('printenv ')
+  );
+}
+
+function matchesScope(command: string, scope: string): boolean {
+  switch (scope) {
+    case 'gateway':
+      return isGatewayProcess(command);
+    case 'cli':
+      return isCliProcess(command);
+    case 'debug':
+      return isDebugProcess(command);
+    case 'relevant':
+      return isGatewayProcess(command) || isCliProcess(command);
+    case 'all':
+    default:
+      return true;
+  }
+}
+
 // GET /debug/status - Summary of gateway status + recent logs
 debug.get('/status', async (c) => {
   const sandbox = c.get('sandbox');
@@ -110,8 +146,20 @@ debug.get('/processes', async (c) => {
   try {
     const processes = await sandbox.listProcesses();
     const includeLogs = c.req.query('logs') === 'true';
+    const scope = (c.req.query('scope') || 'all').toLowerCase();
+    const runningOnly = c.req.query('running') === 'true';
+    const limitParam = Number.parseInt(c.req.query('limit') || '', 10);
+    const limit = Number.isFinite(limitParam) && limitParam > 0 ? limitParam : null;
 
-    const processData = await Promise.all(processes.map(async p => {
+    const filtered = processes.filter(p => {
+      const command = p.command || '';
+      if (runningOnly && p.status !== 'running' && p.status !== 'starting') {
+        return false;
+      }
+      return matchesScope(command, scope);
+    });
+
+    const processData = await Promise.all(filtered.map(async p => {
       const data: Record<string, unknown> = {
         id: p.id,
         command: p.command,
@@ -155,7 +203,82 @@ debug.get('/processes', async (c) => {
       return timeB.localeCompare(timeA);
     });
 
-    return c.json({ count: processes.length, processes: processData });
+    const sliced = limit ? processData.slice(0, limit) : processData;
+    return c.json({
+      count: sliced.length,
+      total: processData.length,
+      scope,
+      runningOnly,
+      processes: sliced,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: errorMessage }, 500);
+  }
+});
+
+// POST /debug/processes/cleanup - Kill stale running debug/cli processes
+debug.post('/processes/cleanup', async (c) => {
+  const sandbox = c.get('sandbox');
+
+  try {
+    const scope = (c.req.query('scope') || 'cli').toLowerCase();
+    const ageParam = Number.parseInt(c.req.query('ageSeconds') || '', 10);
+    const ageSeconds = Number.isFinite(ageParam) && ageParam > 0 ? ageParam : 120;
+    const dryRun = c.req.query('dry') === 'true';
+
+    const now = Date.now();
+    const processes = await sandbox.listProcesses();
+    const candidates = processes.filter(p => {
+      const command = p.command || '';
+      if (p.status !== 'running' && p.status !== 'starting') {
+        return false;
+      }
+      if (!matchesScope(command, scope)) {
+        return false;
+      }
+      if (isGatewayProcess(command)) {
+        return false;
+      }
+      if (!p.startTime) {
+        return false;
+      }
+      const ageMs = now - p.startTime.getTime();
+      return ageMs >= ageSeconds * 1000;
+    });
+
+    const killed: string[] = [];
+    const errors: Array<{ id: string; error: string }> = [];
+
+    for (const proc of candidates) {
+      if (dryRun) {
+        killed.push(proc.id);
+        continue;
+      }
+      try {
+        await proc.kill();
+        killed.push(proc.id);
+      } catch (err) {
+        errors.push({
+          id: proc.id,
+          error: err instanceof Error ? err.message : 'Unknown error',
+        });
+      }
+    }
+
+    return c.json({
+      scope,
+      ageSeconds,
+      dryRun,
+      candidates: candidates.map(p => ({
+        id: p.id,
+        command: p.command,
+        status: p.status,
+        startTime: p.startTime?.toISOString(),
+      })),
+      killed,
+      errors,
+    });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return c.json({ error: errorMessage }, 500);

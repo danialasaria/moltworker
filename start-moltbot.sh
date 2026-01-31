@@ -228,13 +228,40 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
 //   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/anthropic
 //   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/openai
 //   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/google-ai-studio
+//   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/groq
 const baseUrl = (process.env.AI_GATEWAY_BASE_URL || process.env.ANTHROPIC_BASE_URL || '').replace(/\/+$/, '');
 const isOpenAI = baseUrl.endsWith('/openai');
 const isGeminiGateway = baseUrl.endsWith('/google-ai-studio');
+const isGroqGateway = baseUrl.endsWith('/groq');
+// Use Groq if gateway points to /groq OR if GROQ_API_KEY is set directly
+const isGroq = isGroqGateway || !!process.env.GROQ_API_KEY;
 // Use Gemini if gateway points to google-ai-studio OR if GEMINI_API_KEY is set directly
 const isGemini = isGeminiGateway || !!process.env.GEMINI_API_KEY;
 
-if (isGemini) {
+if (isGroq) {
+    // Groq - fast inference with OpenAI-compatible API
+    console.log('Configuring Groq provider for fast inference');
+    const groqBaseUrl = isGroqGateway ? baseUrl : 'https://api.groq.com/openai/v1';
+    config.models = config.models || {};
+    config.models.providers = config.models.providers || {};
+    config.models.providers.groq = {
+        baseUrl: groqBaseUrl,
+        api: 'openai-chat',
+        models: [
+            { id: 'llama-3-groq-8b-tool-use', name: 'Llama 3 Groq 8B Tool Use', contextWindow: 8192 },
+            { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B', contextWindow: 128000 },
+            { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B Instant', contextWindow: 128000 },
+        ]
+    };
+    if (process.env.GROQ_API_KEY) {
+        config.models.providers.groq.apiKey = process.env.GROQ_API_KEY;
+    }
+    config.agents.defaults.models = config.agents.defaults.models || {};
+    config.agents.defaults.models['groq/llama-3-groq-8b-tool-use'] = { alias: 'Groq 8B Tool Use' };
+    config.agents.defaults.models['groq/llama-3.3-70b-versatile'] = { alias: 'Llama 3.3 70B' };
+    config.agents.defaults.models['groq/llama-3.1-8b-instant'] = { alias: 'Llama 3.1 8B' };
+    config.agents.defaults.model.primary = 'groq/llama-3-groq-8b-tool-use';
+} else if (isGemini) {
 
     // Google Gemini - use the built-in google provider (no custom config needed)
     // Just set GEMINI_API_KEY env var and the model
