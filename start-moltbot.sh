@@ -1,9 +1,13 @@
 #!/bin/bash
 # Startup script for Moltbot in Cloudflare Sandbox
-# Version: 2026-01-31-v37-gemini-3-flash
+# Version: 2026-01-31-v41-groq-simplified
+# 
+# Why Moltbot? It provides persistent conversation memory across sessions.
+# This complexity is worth it if you want the bot to remember past conversations.
+# 
 # This script:
 # 1. Restores config from R2 backup if available
-# 2. Configures moltbot from environment variables
+# 2. Configures moltbot from environment variables (Groq-focused)
 # 3. Starts a background sync to backup config to R2
 # 4. Starts the gateway
 
@@ -221,6 +225,11 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
     config.channels.telegram.botToken = process.env.TELEGRAM_BOT_TOKEN;
     config.channels.telegram.enabled = true;
     config.channels.telegram.dmPolicy = process.env.TELEGRAM_DM_POLICY || 'pairing';
+    // Prevent context from growing unbounded in long-running Telegram DM threads.
+    // This is especially important when switching from a huge-context model (e.g. Gemini)
+    // to a smaller-context model (e.g. many Groq-hosted models), which can otherwise
+    // trigger "Context overflow: prompt too large for the model".
+    config.channels.telegram.dmHistoryLimit = 30;
 }
 
 // Discord configuration
@@ -239,99 +248,60 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
     config.channels.slack.enabled = true;
 }
 
-// Base URL override (e.g., for Cloudflare AI Gateway)
-// Usage: Set AI_GATEWAY_BASE_URL or ANTHROPIC_BASE_URL to your endpoint like:
-//   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/anthropic
-//   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/openai
-//   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/google-ai-studio
-//   https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/groq
+// ============================================================
+// MODEL PROVIDER CONFIGURATION
+// ============================================================
+// Simplified: Focus on Groq for fast inference with persistent memory.
+// Moltbot provides conversation memory/persistence across sessions, which is
+// why we're using it instead of a simple bot. The complexity is worth it for memory.
+
 const baseUrl = (process.env.AI_GATEWAY_BASE_URL || process.env.ANTHROPIC_BASE_URL || '').replace(/\/+$/, '');
-const isOpenAI = baseUrl.endsWith('/openai');
-const isGeminiGateway = baseUrl.endsWith('/google-ai-studio');
 const isGroqGateway = baseUrl.endsWith('/groq');
-// Use Groq if gateway points to /groq OR if GROQ_API_KEY is set directly
-const isGroq = isGroqGateway || !!process.env.GROQ_API_KEY;
-// Use Gemini if gateway points to google-ai-studio OR if GEMINI_API_KEY is set directly
-const isGemini = isGeminiGateway || !!process.env.GEMINI_API_KEY;
+const hasGroqKey = !!process.env.GROQ_API_KEY;
 
-if (isGroq) {
-    // Groq - fast inference with OpenAI-compatible API
-    console.log('Configuring Groq provider for fast inference');
-    const groqBaseUrl = isGroqGateway ? baseUrl : 'https://api.groq.com/openai/v1';
-    config.models = config.models || {};
-    config.models.providers = config.models.providers || {};
-    config.models.providers.groq = {
-        baseUrl: groqBaseUrl,
-        api: 'openai-responses',
-        models: [
-            { id: 'moonshotai/kimi-k2-instruct-0905', name: 'Kimi K2', contextWindow: 128000 },
-            { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B', contextWindow: 128000 },
-            { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B Instant', contextWindow: 128000 },
-        ]
-    };
-    if (process.env.GROQ_API_KEY) {
-        config.models.providers.groq.apiKey = process.env.GROQ_API_KEY;
-    }
-    config.agents.defaults.models = config.agents.defaults.models || {};
-    config.agents.defaults.models['groq/moonshotai/kimi-k2-instruct-0905'] = { alias: 'Kimi K2' };
-    config.agents.defaults.models['groq/llama-3.3-70b-versatile'] = { alias: 'Llama 3.3 70B' };
-    config.agents.defaults.models['groq/llama-3.1-8b-instant'] = { alias: 'Llama 3.1 8B' };
-    config.agents.defaults.model.primary = 'groq/moonshotai/kimi-k2-instruct-0905';
-} else if (isGemini) {
-
-    // Google Gemini - use the built-in google provider (no custom config needed)
-    // Just set GEMINI_API_KEY env var and the model
-    console.log('Using built-in Google Gemini provider');
-    config.agents.defaults.model.primary = 'google/gemini-3-flash-preview';
-} else if (isOpenAI) {
-    // Create custom openai provider config with baseUrl override
-    // Omit apiKey so moltbot falls back to OPENAI_API_KEY env var
-    console.log('Configuring OpenAI provider with base URL:', baseUrl);
-    config.models = config.models || {};
-    config.models.providers = config.models.providers || {};
-    config.models.providers.openai = {
-        baseUrl: baseUrl,
-        api: 'openai-responses',
-        models: [
-            { id: 'gpt-5.2', name: 'GPT-5.2', contextWindow: 200000 },
-            { id: 'gpt-5', name: 'GPT-5', contextWindow: 200000 },
-            { id: 'gpt-4.5-preview', name: 'GPT-4.5 Preview', contextWindow: 128000 },
-        ]
-    };
-    // Add models to the allowlist so they appear in /models
-    config.agents.defaults.models = config.agents.defaults.models || {};
-    config.agents.defaults.models['openai/gpt-5.2'] = { alias: 'GPT-5.2' };
-    config.agents.defaults.models['openai/gpt-5'] = { alias: 'GPT-5' };
-    config.agents.defaults.models['openai/gpt-4.5-preview'] = { alias: 'GPT-4.5' };
-    config.agents.defaults.model.primary = 'openai/gpt-5.2';
-} else if (baseUrl) {
-    console.log('Configuring Anthropic provider with base URL:', baseUrl);
-    config.models = config.models || {};
-    config.models.providers = config.models.providers || {};
-    const providerConfig = {
-        baseUrl: baseUrl,
-        api: 'anthropic-messages',
-        models: [
-            { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', contextWindow: 200000 },
-            { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', contextWindow: 200000 },
-            { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', contextWindow: 200000 },
-        ]
-    };
-    // Include API key in provider config if set (required when using custom baseUrl)
-    if (process.env.ANTHROPIC_API_KEY) {
-        providerConfig.apiKey = process.env.ANTHROPIC_API_KEY;
-    }
-    config.models.providers.anthropic = providerConfig;
-    // Add models to the allowlist so they appear in /models
-    config.agents.defaults.models = config.agents.defaults.models || {};
-    config.agents.defaults.models['anthropic/claude-opus-4-5-20251101'] = { alias: 'Opus 4.5' };
-    config.agents.defaults.models['anthropic/claude-sonnet-4-5-20250929'] = { alias: 'Sonnet 4.5' };
-    config.agents.defaults.models['anthropic/claude-haiku-4-5-20251001'] = { alias: 'Haiku 4.5' };
-    config.agents.defaults.model.primary = 'anthropic/claude-opus-4-5-20251101';
-} else {
-    // Default to Anthropic without custom base URL (uses built-in pi-ai catalog)
-    config.agents.defaults.model.primary = 'anthropic/claude-opus-4-5';
+// Validate Groq is configured
+if (!hasGroqKey && !isGroqGateway) {
+    console.error('ERROR: GROQ_API_KEY or AI_GATEWAY_BASE_URL (pointing to /groq) must be set');
+    console.error('Without a model provider, Moltbot cannot respond to messages.');
+    process.exit(1);
 }
+
+// Configure Groq provider
+console.log('Configuring Groq provider for fast inference');
+const groqBaseUrl = isGroqGateway ? baseUrl : 'https://api.groq.com/openai/v1';
+console.log('Groq base URL:', groqBaseUrl);
+
+config.models = config.models || {};
+config.models.providers = config.models.providers || {};
+config.models.providers.groq = {
+    baseUrl: groqBaseUrl,
+    // Groq exposes an OpenAI-compatible *completions* API (chat/completions),
+    // not the OpenAI "Responses" API. Using openai-responses causes hangs/timeouts.
+    api: 'openai-completions',
+    models: [
+        // Context windows from Groq docs (console.groq.com/docs/models)
+        { id: 'moonshotai/kimi-k2-instruct-0905', name: 'Kimi K2', contextWindow: 262144 },
+        { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B', contextWindow: 131072 },
+        { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B Instant', contextWindow: 131072 },
+    ]
+};
+
+if (hasGroqKey) {
+    config.models.providers.groq.apiKey = process.env.GROQ_API_KEY;
+    console.log('Groq API key: SET (from GROQ_API_KEY env var)');
+} else {
+    console.log('Groq API key: Will use AI Gateway authentication');
+}
+
+// Configure model allowlist and default
+config.agents.defaults.models = config.agents.defaults.models || {};
+config.agents.defaults.models['groq/moonshotai/kimi-k2-instruct-0905'] = { alias: 'Kimi K2' };
+config.agents.defaults.models['groq/llama-3.3-70b-versatile'] = { alias: 'Llama 3.3 70B' };
+config.agents.defaults.models['groq/llama-3.1-8b-instant'] = { alias: 'Llama 3.1 8B' };
+
+// Default to production model (larger context, more stable than preview Kimi)
+config.agents.defaults.model.primary = 'groq/llama-3.3-70b-versatile';
+console.log('Default model:', config.agents.defaults.model.primary);
 
 // Write updated config
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
